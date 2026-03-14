@@ -62,7 +62,7 @@ class WhaticketClient:
                 timeout=30
             )
             
-            if response.status_code == 201:
+            if response.status_code in [200,201]:
                 return response.json()
             elif response.status_code == 401:
                 raise Exception("Error 401: Token inválido o expirado")
@@ -148,6 +148,181 @@ class WhaticketClient:
         
         return []
     
+    def transfer_ticket(self, ticket_id: Union[int, str], user_id: str, queue_id: str = None) -> Dict:
+        """
+        [FUNCIÓN 3] Transfiere un ticket a otro usuario
+        
+        Args:
+            ticket_id: ID del ticket a transferir
+            user_id: ID del usuario destino
+            queue_id: ID de la cola destino (opcional)
+        
+        Returns:
+            {"success": bool, "data": dict, "new_user": str, "old_user": str}
+        """
+        url = f"/tickets/{ticket_id}/transfer"
+        
+        # Payload exactamente como en la petición que capturaste
+        payload = {"userId": user_id}
+        if queue_id:
+            payload["queueId"] = queue_id
+        
+        try:
+            response = self._request("POST", url, data=payload)
+            return {
+                "success": True,
+                "data": response,
+                "new_user": response.get("newUserName"),
+                "old_user": response.get("oldUserName")
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e)
+            }
+
+
+    def get_fast_responses(self) -> List[Dict]:
+        """
+        Obtiene todas las respuestas rápidas
+        """
+        response = self._request("GET", "/fastresponse")
+        
+        if isinstance(response, dict):
+            return response.get("fastResponses", [])
+        return response if isinstance(response, list) else []
+
+
+    def send_fast_response_by_id(self, ticket_id: Union[int, str], fast_response_id: str, contact_name: str = None) -> Dict:
+        """
+        Envía una respuesta rápida por su ID
+        """
+        # Obtener todas
+        all_responses = self.get_fast_responses()
+        
+        # Buscar la que necesitas
+        selected = None
+        for fr in all_responses:
+            if fr.get("id") == fast_response_id:
+                selected = fr
+                break
+        
+        if not selected:
+            return {"success": False, "error": "ID no encontrado"}
+        
+        # Preparar mensaje
+        message = selected.get("message", "")
+        if contact_name:
+            message = message.replace("{{contactName}}", contact_name)
+        
+        # Enviar
+        return self.send_message(ticket_id, message)
+
+
+    def send_fast_response_by_shortcut(self, ticket_id: Union[int, str], shortcut: str, contact_name: str = None) -> Dict:
+        """
+        Envía una respuesta rápida buscándola por su shortcut (nombre)
+        
+        Args:
+            ticket_id: ID del ticket destino
+            shortcut: El nombre/shortcut de la respuesta (ej: "01", "AVISO1", "RESERVA S/5")
+            contact_name: Nombre del contacto (para reemplazar {{contactName}})
+        
+        Returns:
+            Resultado del envío
+        """
+        # 1. Obtener todas las respuestas (esto llama a la API)
+        all_responses = self.get_fast_responses()
+        
+        # 2. Buscar por shortcut (nombre)
+        selected = None
+        for fr in all_responses:
+            if fr.get("shortcut", "").lower() == shortcut.lower():
+                selected = fr
+                break
+        
+        if not selected:
+            return {
+                "success": False, 
+                "error": f"Respuesta rápida '{shortcut}' no encontrada"
+            }
+        
+        # 3. Preparar mensaje
+        message = selected.get("message", "")
+        if contact_name and message:
+            message = message.replace("{{contactName}}", contact_name)
+        
+        # 4. Enviar
+        return self.send_message(ticket_id, message)
+    
+    def get_contact_name_from_ticket(self, ticket_id: Union[int, str]) -> str:
+        """
+        Obtiene el nombre del contacto de un ticket
+        
+        Args:
+            ticket_id: ID del ticket
+        
+        Returns:
+            Nombre del contacto o "Cliente" si no se encuentra
+        """
+        try:
+            ticket = self.get_ticket(ticket_id)
+            
+            # Buscar en diferentes lugares donde puede estar el contacto
+            contact = ticket.get('contact', {})
+            if not contact and 'ticket' in ticket:
+                contact = ticket['ticket'].get('contact', {})
+            
+            name = contact.get('name', '')
+            if name:
+                return name
+            
+            # Si no hay nombre, intentar con el número
+            phone = contact.get('number', '')
+            if phone:
+                return f"Cliente {phone[-4:]}"  # Últimos 4 dígitos
+            
+            return "Cliente"
+            
+        except Exception as e:
+            print(f"Error obteniendo nombre: {e}")
+            return "Cliente"
+    def get_contact(self, contact_id: str) -> Dict:
+        """
+        Obtiene un contacto por su ID
+        """
+        return self._request("GET", f"/contacts/{contact_id}")
+
+
+    def get_contact_extra_info(self, contact_id: str) -> List[Dict]:
+        """
+        Obtiene solo los campos extra de un contacto
+        """
+        contact = self.get_contact(contact_id)
+        return contact.get("extraInfo", [])
+
+    def add_contact_extra_field(self, contact_id: str, field_name: str, field_value: str) -> Dict:
+        """
+        AGREGA un campo extra al contacto SIN borrar los existentes
+        """
+        # 1. Obtener contacto ACTUAL
+        current_contact = self.get_contact(contact_id)
+        
+        # 2. Obtener extraInfo existente
+        extra_info = current_contact.get("extraInfo", [])
+        
+        # 3. AGREGAR el nuevo campo
+        extra_info.append({
+            "name": field_name,
+            "value": field_value
+        })
+        
+        # 4. Actualizar
+        current_contact["extraInfo"] = extra_info
+        
+        # 5. Enviar PUT
+        return self._request("PUT", f"/contacts/{contact_id}", data=current_contact)
+
     # ==================== MÉTODOS DE TICKETS ====================
     
     def search_tickets(self, queue_ids=None, status="open", page=1, 

@@ -2,7 +2,7 @@
 utils.py - Utilidades para WhaticketAPI
 Extractores de IDs, buscadores por nombre y formateadores
 """
-
+from src.api import WhaticketClient 
 import requests
 import json
 from datetime import datetime
@@ -29,41 +29,157 @@ def extract_user_ids(users_data: List[Dict]) -> List[Union[int, str]]:
                 ids.append(user_id)
     return ids
 
-def extract_queue_ids(queues_data: List[Dict]) -> List[Union[int, str]]:
+
+def extract_queue_ids(queues_data: List[Dict]) -> Dict[str, List[Dict]]:
     """
-    Extrae solo los IDs de una lista de colas
+    Extrae nombres e IDs de las colas
     
     Args:
-        queues_data: Lista de objetos cola
+        queues_data: Lista de objetos cola de la API
     
     Returns:
-        [id1, id2, id3, ...]
+        [{"nombre": "Ventas", "id": "abc123"}, {"nombre": "Soporte", "id": "def456"}, ...]
     """
-    ids = []
+    queues = []
+    
+    if not queues_data:
+        return queues
+    
     for queue in queues_data:
         if isinstance(queue, dict):
+            queue_name = queue.get('name', 'SIN NOMBRE')
             queue_id = queue.get('id')
-            if queue_id:
-                ids.append(queue_id)
-    return ids
+            
+            if queue_id:  # Solo si tiene ID válido
+                queues.append({
+                    "name": queue_name,
+                    "id": queue_id
+                })
+    
+    return queues
 
-def extract_tag_ids(tags_data: List[Dict]) -> List[Union[int, str]]:
+def get_queue_id_by_name(client: WhaticketClient, queue_name: str) -> str:
     """
-    Extrae solo los IDs de una lista de tags
+    Obtiene el ID de una cola buscándola por su nombre
     
     Args:
-        tags_data: Lista de objetos tag
+        client: Instancia de WhaticketClient (ya autenticado)
+        queue_name: Nombre exacto de la cola a buscar
     
     Returns:
-        [id1, id2, id3, ...]
+        str: ID de la cola o None si no se encuentra
+    
+    Example:
+        queue_id = get_queue_id_by_name(client, "VENTAS")
+        if queue_id:
+            tickets = client.search_tickets(queue_ids=[queue_id])
     """
-    ids = []
+    # Obtener todas las colas usando el cliente
+    queues_data = client.get_queues()
+    
+    # Usar tu función extract_queue_ids para obtener la lista formateada
+    queues_list = extract_queue_ids(queues_data)
+    
+    # Buscar por nombre exacto
+    for queue in queues_list:
+        if queue["name"].upper() == queue_name.upper():  # Case insensitive
+            return queue["id"]
+    
+    # ❌ Este print SOLO se ejecuta si NO encontró nada
+    print(f"❌ No se encontró ninguna cola con el nombre '{queue_name}'")
+    return None
+
+def extract_tags_info(tags_data: List[Dict]) -> List[Dict]:
+    """
+    Extrae nombres e IDs de los tags
+    
+    Args:
+        tags_data: Lista de objetos tag de la API
+    
+    Returns:
+        [{"name": "01", "id": "1ade3a12-..."}, {"name": "02", "id": "2976f3d6-..."}, ...]
+    """
+    tags = []
+    
     for tag in tags_data:
         if isinstance(tag, dict):
+            tag_name = tag.get('name')
             tag_id = tag.get('id')
+            
             if tag_id:
-                ids.append(tag_id)
-    return ids
+                tags.append({
+                    "name": tag_name,
+                    "id": tag_id
+                })
+    
+    return tags
+
+def get_tag_id_by_name(client: 'WhaticketClient', tag_name: str) -> str:
+    """
+    Obtiene el ID de un tag por su nombre
+    
+    Args:
+        client: Instancia de WhaticketClient
+        tag_name: Nombre exacto del tag a buscar
+    
+    Returns:
+        str: ID del tag o None si no se encuentra
+    """
+    tags_data = client.get_tags()
+    
+    for tag in tags_data:
+        if isinstance(tag, dict) and tag.get('name', '').lower() == tag_name.lower():
+            return tag.get('id')
+    
+    print(f"❌ No se encontró ningún tag con el nombre '{tag_name}'")
+    return None
+
+def extract_users_info(users_data: List[Dict]) -> List[Dict]:
+    """
+    [FUNCIÓN 1] Extrae nombres e IDs de todos los usuarios
+    
+    Args:
+        users_data: Lista de objetos usuario de la API
+    
+    Returns:
+        [{"name": "Jordan", "id": "cf175e68-..."}, {"name": "FIORELA", "id": "7cc98466-..."}, ...]
+    """
+    users = []
+    
+    for user in users_data:
+        if isinstance(user, dict):
+            user_name = user.get('name')
+            user_id = user.get('id')
+            
+            if user_id:
+                users.append({
+                    "name": user_name,
+                    "id": user_id
+                })
+    
+    return users
+
+
+def get_user_id_by_name(client: 'WhaticketClient', user_name: str) -> str:
+    """
+    [FUNCIÓN 2] Obtiene el ID de un usuario por su nombre
+    
+    Args:
+        client: Instancia de WhaticketClient
+        user_name: Nombre exacto del usuario a buscar
+    
+    Returns:
+        str: ID del usuario o None si no se encuentra
+    """
+    users_data = client.get_users()
+    
+    for user in users_data:
+        if isinstance(user, dict) and user.get('name', '').lower() == user_name.lower():
+            return user.get('id')
+    
+    print(f"❌ No se encontró ningún usuario con el nombre '{user_name}'")
+    return None
+
 
 def extract_ticket_ids(tickets_data: List[Dict]) -> List[Union[int, str]]:
     """
@@ -156,19 +272,6 @@ def find_user_by_name(users_data: List[Dict], name: str, exact: bool = False) ->
     """
     return find_by_name(users_data, name, exact)
 
-def find_queue_by_name(queues_data: List[Dict], name: str, exact: bool = False) -> List[Dict]:
-    """
-    Busca colas por nombre
-    
-    Args:
-        queues_data: Lista de colas
-        name: Nombre a buscar
-        exact: Coincidencia exacta
-    
-    Returns:
-        Colas encontradas
-    """
-    return find_by_name(queues_data, name, exact)
 
 def find_tag_by_name(tags_data: List[Dict], name: str, exact: bool = False) -> List[Dict]:
     """
