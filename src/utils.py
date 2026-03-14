@@ -159,6 +159,40 @@ def extract_users_info(users_data: List[Dict]) -> List[Dict]:
     
     return users
 
+def get_tickets_by_queue_and_tag(client: 'WhaticketClient', queue_name: str, tag_name: str, status: str = "open") -> List[Dict]:
+    """
+    Obtiene tickets de una cola específica que tengan un tag específico
+    
+    Args:
+        client: Instancia de WhaticketClient
+        queue_name: Nombre de la cola
+        tag_name: Nombre del tag
+        status: Estado del ticket ("open", "pending", etc.)
+    
+    Returns:
+        Lista de tickets que cumplen ambos filtros
+    """
+    # Obtener IDs
+    queue_id = get_queue_id_by_name(client, queue_name)
+    tag_id = get_tag_id_by_name(client, tag_name)
+    
+    if not queue_id:
+        print(f"❌ Cola '{queue_name}' no encontrada")
+        return []
+    
+    if not tag_id:
+        print(f"❌ Tag '{tag_name}' no encontrado")
+        return []
+    
+    # Buscar tickets
+    tickets = client.search_tickets(
+        queue_ids=[queue_id],
+        tags_ids=[tag_id],
+        status=status,
+        page=1
+    )
+    
+    return tickets
 
 def get_user_id_by_name(client: 'WhaticketClient', user_name: str) -> str:
     """
