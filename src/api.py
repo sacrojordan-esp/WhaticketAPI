@@ -5,7 +5,12 @@ Maneja la conexión y operaciones con el sistema de tickets
 
 import requests
 import json
-from typing import List, Dict, Optional, Any, Union
+from typing import List, Dict, Optional, Any, Union, BinaryIO
+
+import hashlib
+import uuid
+from PIL import Image
+from pathlib import Path
 
 class WhaticketClient:
     """
@@ -57,7 +62,7 @@ class WhaticketClient:
                 timeout=30
             )
             
-            if response.status_code == 200:
+            if response.status_code == 201:
                 return response.json()
             elif response.status_code == 401:
                 raise Exception("Error 401: Token inválido o expirado")
@@ -245,7 +250,7 @@ class WhaticketClient:
     def send_message(self, ticket_id: Union[int, str], message: str) -> Dict:
         """
         Envía un mensaje simple a un ticket
-        
+    
         Args:
             ticket_id: ID del ticket destino
             message: Contenido del mensaje
@@ -254,12 +259,11 @@ class WhaticketClient:
             {success: bool, message_id: str, timestamp: str}
         """
         data = {
-            "body": message,
-            "ticketId": ticket_id
+            "body": message
         }
         
         try:
-            response = self._request("POST", "/messages", data=data)
+            response = self._request("POST", f"/messages/{ticket_id}", data=data)
             return {
                 "success": True,
                 "message_id": response.get("id", ""),
@@ -311,36 +315,126 @@ class WhaticketClient:
         # Enviar mensaje renderizado
         return self.send_message(ticket_id, body)
     
-    def send_media(self, ticket_id: Union[int, str], media_url: str, 
-                  caption: str = None) -> Dict:
+    def send_image(self, ticket_id: Union[int, str], image_path: str, company_id: str = None) -> Dict:
         """
-        Envía un mensaje con archivo multimedia
+        Envía una imagen a un ticket específico
         
         Args:
             ticket_id: ID del ticket destino
-            media_url: URL del archivo
-            caption: Texto opcional
+            image_path: Ruta local de la imagen
+            company_id: ID de la compañía (opcional)
         
         Returns:
-            {success: bool, media_id: str}
+            Dict con resultado del envío
         """
-        data = {
-            "ticketId": ticket_id,
-            "mediaUrl": media_url
-        }
-        
-        if caption:
-            data["caption"] = caption
-        
         try:
-            response = self._request("POST", "/messages/media", data=data)
+            from pathlib import Path
+            import hashlib
+            import uuid
+            from PIL import Image
+            import requests
+
+            # Validar que el archivo existe
+            if not Path(image_path).exists():
+                return {"success": False, "error": f"Archivo no encontrado: {image_path}"}
+
+            # 1️⃣ Leer archivo y calcular hash
+            with open(image_path, "rb") as f:
+                file_bytes = f.read()
+            file_hash = hashlib.sha256(file_bytes).hexdigest()
+            filename = Path(image_path).name
+            
+            # Detectar content type (simple, puedes mejorarlo)
+            if filename.lower().endswith('.png'):
+                content_type = "image/png"
+            else:
+                content_type = "image/jpeg"
+
+            print(f"📤 Solicitando URL de subida para {filename}...")
+
+            # 2️⃣ Obtener URL de subida (usando requests directamente para evitar el _request)
+            payload = {
+                "companyId": company_id or self._get_company_id_from_token(),
+                "filename": filename,
+                "contentType": content_type
+            }
+            
+            # Hacer la petición directamente (no usar _request porque necesitamos capturar 201)
+            url = f"{self.base_url}/medias/generate-upload-url"
+            response = self.session.post(url, json=payload)
+            
+            if response.status_code not in [200, 201]:
+                return {
+                    "success": False, 
+                    "error": f"Error generando URL. Código: {response.status_code}. Respuesta: {response.text[:200]}"
+                }
+            
+            upload_data = response.json()
+            upload_url = upload_data["uploadUrl"]
+            stored_filename = upload_data["storageFilename"]
+            print(f"✅ URL obtenida correctamente")
+
+            # 3️⃣ Subir la imagen a Google Cloud Storage
+            print(f"📤 Subiendo archivo a Google Storage...")
+            put_headers = {"Content-Type": content_type}
+            put_response = requests.put(upload_url, data=file_bytes, headers=put_headers, timeout=60)
+
+            if put_response.status_code != 200:
+                return {
+                    "success": False,
+                    "error": f"Error al subir a Google Storage. Código: {put_response.status_code}"
+                }
+            print(f"✅ Archivo subido correctamente a Storage.")
+
+            # 4️⃣ Obtener dimensiones
+            img = Image.open(image_path)
+            width, height = img.size
+
+            # 5️⃣ Enviar el mensaje con la imagen al chat
+            print(f"📤 Enviando mensaje con imagen al ticket {ticket_id}...")
+            message_payload = {
+                "messages": [{
+                    "id": str(uuid.uuid4()),
+                    "body": "",
+                    "mimeType": content_type,
+                    "fileHash": file_hash,
+                    "filename": filename,
+                    "storedFilename": stored_filename,
+                    "metadata": {"height": height, "width": width},
+                    "signMessage": False
+                }]
+            }
+            
+            # Este endpoint SÍ devuelve JSON, usamos _request normal
+            message_response = self._request("POST", f"/messages/medias/{ticket_id}", data=message_payload)
+
             return {
                 "success": True,
-                "media_id": response.get("id", ""),
-                "data": response
+                "message_id": message_response.get("id", ""),
+                "data": message_response
             }
+
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "error": f"Error de red: {str(e)}"}
         except Exception as e:
-            return {
-                "success": False,
-                "error": str(e)
-            }
+            return {"success": False, "error": f"Error inesperado: {str(e)}"}
+    
+
+    def _get_company_id_from_token(self) -> str:
+        """
+        Intenta extraer el companyId del token JWT
+        """
+        try:
+            # Decodificar parte del token (sin verificar firma)
+            import base64
+            parts = self.token.split('.')
+            if len(parts) == 3:
+                payload = parts[1]
+                # Ajustar padding
+                payload += '=' * (-len(payload) % 4)
+                decoded = base64.b64decode(payload)
+                data = json.loads(decoded)
+                return data.get('companyId', '')
+        except:
+            pass
+        return ""
